@@ -597,3 +597,16 @@ test('RT6: days whose MD differs by a fraction of a kVA are not merged into one 
   const net = md => (34468.2 + 88.518 * (md - 300)) * (1 - share * 0.3);
   approx(res.totals.networkCents, net(500.0001) + net(500.0004), 1e-6);
 });
+
+test('RT6: interval lengths that do not line up with half-hours (20 minutes) are flagged because MD is only approximate', () => {
+  const e = rowsFor('2026-08-15', '2026-08-15', () => 10 / 3, { L: 20 });          // constant 10 kW
+  const q = rowsFor('2026-08-15', '2026-08-15', () => 0, { suffix: 'Q1', unit: 'kvarh', L: 20 });
+  const res = price('RT6', '2026-08-15', '2026-08-15', e, { reactive: q });
+  assert.ok(codesOf(res).includes('INTERVAL_LENGTH_MISALIGNED'));
+  assert.match(res.notices.find(n => n.code === 'INTERVAL_LENGTH_MISALIGNED').message, /20 minutes/);
+  // 5, 15, 30 and 60 minute data line up and are not flagged
+  for (const L of [5, 15, 30, 60]) {
+    const r = price('RT6', '2026-08-15', '2026-08-15', rowsFor('2026-08-15', '2026-08-15', () => 10 * L / 60, { L }), { reactive: rowsFor('2026-08-15', '2026-08-15', () => 0, { suffix: 'Q1', unit: 'kvarh', L }) });
+    assert.ok(!codesOf(r).includes('INTERVAL_LENGTH_MISALIGNED'), `${L}-minute data`);
+  }
+});

@@ -2160,9 +2160,11 @@ const engine = (() => {
     for (const r of reactive) get(r.intervalDate).q.push(r);
     for (const r of exp) get(r.intervalDate).b.push(r);
     const tanPf = Math.tan(Math.acos(clamp(assumedPf, 0.01, 1)));
+    const oddLengths = new Set();
     const addSlots = (acc, mins, r) => {
       if (r.quality === 'N') return;                                // missing data contributes nothing
       const L = r.intervalLength;
+      if (30 % L !== 0 && L % 30 !== 0) oddLengths.add(L);          // e.g. 20 or 45 minutes: intervals straddle half-hour boundaries
       if (L <= 30) { const s = Math.floor(r.startMinute / 30); if (s >= 0 && s < 48) { acc[s] += r.value; mins[s] += L; } }
       else { const n = Math.round(L / 30), s0 = Math.floor(r.startMinute / 30); for (let k = 0; k < n && s0 + k < 48; k++) { acc[s0 + k] += r.value / n; mins[s0 + k] += 30; } }
     };
@@ -2181,7 +2183,7 @@ const engine = (() => {
         if (kva > d.maxKva) d.maxKva = kva;
       }
     }
-    return { days, firstDate: first, lastDate: last, hasReactive: reactive.length > 0, assumedPf };
+    return { days, firstDate: first, lastDate: last, hasReactive: reactive.length > 0, assumedPf, oddLengths: Array.from(oddLengths).sort((a, b) => a - b) };
   }
 
   // ============================ pricing one billing period =================================================
@@ -2318,6 +2320,7 @@ const engine = (() => {
       }
       let pfSlots = 0, daysPf = 0;
       for (let n = util.dayNum(winStart(period.from)), e = util.dayNum(period.to); n <= e; n++) { const x = profile.days.get(util.fromDayNum(n)); if (x && x.pfAssumedSlots) { pfSlots += x.pfAssumedSlots; daysPf++; } }
+      if (profile.oddLengths && profile.oddLengths.length) note('warn', 'INTERVAL_LENGTH_MISALIGNED', `Interval data of ${profile.oddLengths.join(' / ')} minutes does not line up with half-hours, so maximum demand is only approximate for this NMI. NEM12 allows 1, 5, 10, 15 or 30 minutes.`);
       if (!profile.hasReactive) note('warn', 'PF_ASSUMED', `No reactive (Q/K) datastream for this NMI: kVA is derived from kW using an assumed power factor of ${util.fmtNum(profile.assumedPf, 2)}.`);
       else if (pfSlots) note('warn', 'PF_ASSUMED', `Reactive data is missing for ${util.fmtNum(pfSlots)} half-hours on ${daysPf} day(s); the assumed power factor of ${util.fmtNum(profile.assumedPf, 2)} was used for those.`);
     }
