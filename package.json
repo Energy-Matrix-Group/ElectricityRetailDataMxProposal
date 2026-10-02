@@ -1,0 +1,7 @@
+{
+  "name": "electricity-retail-prototype",
+  "private": true,
+  "description": "Single-file electricity retail prototype (NEM12 ingestion, Western Power tariff book, calculation engine, quotes and bills). Open electricity-retail-prototype.html in a browser.",
+  "scripts": { "test": "node --test" },
+  "devDependencies": { "jszip": "3.10.1" }
+}
