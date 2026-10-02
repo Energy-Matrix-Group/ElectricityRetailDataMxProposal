@@ -2096,11 +2096,30 @@ const engine = (() => {
       }
       return out.sort((a, b) => a.lower - b.lower);
     }
+    /** DEMAND_FIXED and DEMAND_RATE are a pair per band: report any band that has only one of the two effective on this date (never price a half-loaded table) */
+    function demandBandGaps(date) {
+      const out = [];
+      for (const code of new Set(rows.filter(r => r.componentCode === 'DEMAND_FIXED' || r.componentCode === 'DEMAND_RATE').map(r => r.bandCode))) {
+        const f = pick('DEMAND_FIXED', code, date), v = pick('DEMAND_RATE', code, date);
+        if (f && !v) out.push({ bandCode: code, missing: 'DEMAND_RATE' }); else if (!f && v) out.push({ bandCode: code, missing: 'DEMAND_FIXED' });
+      }
+      return out;
+    }
     const param = (name, date) => { const p = pick('PARAM', name, date); return p ? p.row.value : null; };
-    return { pick, demandBands, param, assumedList: () => Array.from(assumed.entries()).map(([k, r]) => ({ key: k, row: r })) };
+    return { pick, demandBands, demandBandGaps, param, assumedList: () => Array.from(assumed.entries()).map(([k, r]) => ({ key: k, row: r })) };
   }
 
   // ============================ RT6 demand charge =========================================================
+  /** The effective band table must start at 0 kVA and be continuous, so every MD belongs to exactly one band. Returns '' or a description of the problem. */
+  function demandTableHole(bands) {
+    if (bands[0].lower !== 0) return `starts at ${util.fmtNum(bands[0].lower)} kVA instead of 0 kVA`;
+    for (let i = 1; i < bands.length; i++) {
+      const prev = bands[i - 1], b = bands[i];
+      if (b.lower > prev.upper) return `has a gap between ${util.fmtNum(prev.upper)} and ${util.fmtNum(b.lower)} kVA`;
+      if (b.lower < prev.upper) return `has overlapping bands around ${util.fmtNum(b.lower)} kVA`;
+    }
+    return '';
+  }
   /** Published band table applied exactly as given (no smoothing): the band holding MD sets the fixed amount. */
   function demandCharge(md, bands) {
     md = Math.max(0, +md || 0);
@@ -2158,7 +2177,7 @@ const engine = (() => {
         const kw = kwh[s] * 2;                                      // kWh in 0.5 h -> kW
         let kvar;
         if (qMin[s] >= 29.999) kvar = kvarh[s] * 2; else { kvar = kw * tanPf; d.pfAssumedSlots++; }
-        const kva = Math.hypot(kw, kvar);
+        const kva = Math.round(Math.hypot(kw, kvar) * 1e9) / 1e9;   // snap away floating-point noise: 240 kW at PF 0.8 is exactly 300 kVA, not 299.99999999999994
         if (kva > d.maxKva) d.maxKva = kva;
       }
     }
@@ -2322,10 +2341,15 @@ const engine = (() => {
         if (!bandOrder.includes('OFF_PEAK')) note('error', 'NO_OFF_PEAK_BAND', `${tariffCode} needs a time band with code OFF_PEAK to work out the off-peak share used in the demand discount.`);
         const runs = [];
         let cur = null, demandLengthDays = 0, mdMaxLength = 0, extrapolatedDays = 0, defaultsUsed = false, lengthKvaUsed = 1000;
+        const tableHoles = new Map();
         for (let i = 0; i < nDays; i++) {
           const d = days[i], rd = rateDateOf(d), md = mdByDay[i];
+          const gaps = rb.demandBandGaps(rd);
+          if (gaps.length) { for (const g of gaps) miss(`${comp.label} ${g.bandCode} ${g.missing === 'DEMAND_FIXED' ? 'fixed amount' : 'rate'}`, d); cur = null; continue; }
           const bands = rb.demandBands(rd);
           if (!bands.length) { miss(`${comp.label} band`, d); cur = null; continue; }
+          const hole = demandTableHole(bands);
+          if (hole) { tableHoles.set(hole, (tableHoles.get(hole) || 0) + 1); cur = null; continue; }
           const dfv = rb.param('DF', rd), ts = rb.param('TAPER_START', rd), te = rb.param('TAPER_END', rd), dl = rb.param('DEMAND_LENGTH_KVA', rd);
           if (dfv == null || ts == null || te == null) defaultsUsed = true;
           const p = { DF: dfv ?? 0.3, taperStart: ts ?? 1000, taperEnd: te ?? 1500 };
@@ -2333,10 +2357,11 @@ const engine = (() => {
           const calc = rt6Daily(md, offPeakShare, bands, p);
           if (md > lengthKva) { demandLengthDays++; mdMaxLength = Math.max(mdMaxLength, md); }
           if (calc.extrapolated) extrapolatedDays++;
-          const key = [calc.band.fixedRateId, calc.band.rateId, md.toFixed(3), p.DF, p.taperStart, p.taperEnd].join('|');
+          const key = [calc.band.fixedRateId, calc.band.rateId, md, p.DF, p.taperStart, p.taperEnd].join('|');
           if (cur && cur.key === key) { cur.to = d; cur.days++; }
           else { cur = { key, from: d, to: d, days: 1, md, calc, p, assumed: calc.band.assumed }; runs.push(cur); }
         }
+        for (const [hole, n] of tableHoles) note('error', 'RATE_TABLE_INVALID', `The ${tariffCode} demand band table ${hole}, so MD cannot be priced on ${n} day(s). Every kVA from 0 upwards must belong to exactly one band (Tariff book → Rates).`);
         if (defaultsUsed) note('warn', 'PARAM_DEFAULT', `RT6 discount parameters (DF, TAPER_START, TAPER_END) are missing from the tariff book; defaults 0.30 / 1,000 / 1,500 were used.`);
         for (const r of runs) {
           const c = r.calc, b = c.band;
@@ -4044,7 +4069,7 @@ const ui = (() => {
         <div class="form-grid" id="rt6calc" data-asat="${asAt}"><label class="field">MD (kVA)<input class="in" type="number" step="any" value="412.5" data-input="rt6-calc" id="c-md"></label><label class="field">Off-peak share of kWh in the billing period (%)<input class="in" type="number" step="any" value="78" data-input="rt6-calc" id="c-share"></label><label class="field">Days in the billing period<input class="in" type="number" value="30" data-input="rt6-calc" id="c-days"></label><label class="field">Metering add-on (c/day, optional)<input class="in" type="number" step="any" value="0" data-input="rt6-calc" id="c-meter"></label></div><div id="rt6-out" style="margin-top:12px"></div>`,
       }) +
       card({
-        title: 'Method assumptions to confirm', body: `<ul style="margin:0;padding-left:18px;display:grid;gap:4px"><li><b>MD</b> is the highest half-hourly kVA in the rolling 12 months ending on each billing day (365-day window, today inclusive), calculated daily. A "period end" mode (one MD for the whole period) is available under Data &amp; settings to compare against Western Power's calculator.</li>
+        title: 'Method assumptions to confirm', body: `<ul style="margin:0;padding-left:18px;display:grid;gap:4px"><li><b>MD</b> is the highest half-hourly kVA in the rolling 12 months ending on each billing day (the window runs back 12 calendar months, so 365 or 366 days, today inclusive), calculated daily. A "period end" mode (one MD for the whole period) is available under Data &amp; settings to compare against Western Power's calculator.</li>
         <li><b>kVA</b> per half hour = √(kW² + kvar²), with kW = kWh ÷ (IntervalLength ÷ 60) and kvar likewise from kvarh (E and Q/K datastreams). Shorter intervals are summed to the half hour first. With no Q/K datastream the site's assumed power factor (default 0.9) is used and a warning is shown.</li>
         <li><b>Off-peak share</b> = off-peak kWh ÷ total consumption kWh in the billing period, where on-peak is Mon–Fri excluding public holidays, 15:00–21:00 (by interval start time).</li>
         <li><b>Discount</b>: MD &lt; 1,000: share × DF · 1,000 ≤ MD &lt; 1,500: ((1,500 − MD) ÷ 500) × share × DF · MD ≥ 1,500: none. DF = 0.30.</li>

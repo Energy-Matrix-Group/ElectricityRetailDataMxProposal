@@ -541,3 +541,59 @@ test('finalise: each line rounds to whole cents, GST is 10% of the rounded subto
   assert.equal(f.gstCents, 25);
   assert.equal(f.totalCents, 276);
 });
+
+// ---- found by the independent numerics review -------------------------------------------------------------------
+const rt6Day = (date, kvaOfSlot20, { pf = 0.9, withQ = true } = {}) => {
+  const kw = kvaOfSlot20 * (withQ ? 1 : pf);
+  const e = rowsFor(date, date, (d, i) => (i === 20 ? kw / 2 : 0.5));
+  const q = rowsFor(date, date, () => 0, { suffix: 'Q1', unit: 'kvarh' });
+  return { e, q };
+};
+
+test('RT6: a band whose fixed amount or rate is missing is an error, never silently priced from the neighbouring band', () => {
+  const without = (comp, band) => seed.rates.filter(r => !(r.tariffCode === 'RT6' && r.componentCode === comp && r.bandCode === band));
+  const { e, q } = rt6Day('2026-08-15', 100);
+  for (const [comp, band] of [['DEMAND_FIXED', 'B1'], ['DEMAND_RATE', 'B1'], ['DEMAND_RATE', 'B2'], ['DEMAND_RATE', 'B3']]) {
+    const res = price('RT6', '2026-08-15', '2026-08-15', e, { reactive: q, rates: without(comp, band) });
+    assert.equal(res.ok, false, `${comp} ${band} deleted must not price`);
+    assert.ok(res.notices.some(n => n.code === 'RATE_MISSING' && n.message.includes(band)), `${comp} ${band}: ${JSON.stringify(res.notices.map(n => n.message))}`);
+    assert.equal(line(res, 'NET.DEMAND').length, 0, 'no demand line is produced from an incomplete table');
+  }
+  const ok = price('RT6', '2026-08-15', '2026-08-15', e, { reactive: q });
+  assert.equal(ok.ok, true);
+  approx(line(ok, 'NET.DEMAND')[0].rate, 1359.249 + 114.894 * 100, 1e-6);
+});
+
+test('RT6: a band table with a gap, an overlap or a start above 0 kVA is rejected with RATE_TABLE_INVALID', () => {
+  const { e, q } = rt6Day('2026-08-15', 100);
+  const edit = (band, field, value) => seed.rates.map(r => (r.tariffCode === 'RT6' && r.componentCode === 'DEMAND_RATE' && r.bandCode === band ? { ...r, [field]: value } : r));
+  const cases = [['gap', edit('B2', 'lowerKva', 350), /gap between 300 and 350/], ['overlap', edit('B2', 'lowerKva', 250), /overlapping bands around 250/], ['start', edit('B1', 'lowerKva', 50), /starts at 50 kVA/]];
+  for (const [name, rates, re] of cases) {
+    const res = price('RT6', '2026-08-15', '2026-08-15', e, { reactive: q, rates });
+    assert.equal(res.ok, false, name);
+    const n = res.notices.find(x => x.code === 'RATE_TABLE_INVALID');
+    assert.ok(n && re.test(n.message), `${name}: ${n && n.message}`);
+    assert.equal(line(res, 'NET.DEMAND').length, 0);
+  }
+});
+
+test('RT6: kVA derived through an assumed power factor lands exactly on the 300 / 1,000 / 1,500 boundaries (no floating-point noise)', () => {
+  // 240 kW at PF 0.8 is exactly 300 kVA; the raw hypot gives 299.99999999999994 and used to bill band 1 ($13.59/day too much)
+  const res = price('RT6', '2026-08-15', '2026-08-15', rowsFor('2026-08-15', '2026-08-15', (d, i) => (i === 20 ? 120 : 1)), { site: { assumedPf: 0.8 } });
+  assert.equal(res.demand.mdEnd, 300);
+  assert.equal(res.demand.runs[0].bandCode, 'B2');
+  approx(line(res, 'NET.DEMAND')[0].rate, 34468.2, 1e-9);
+  // PF 0.75 with 375 kWh in a half hour is exactly 1,000 kVA: not above the 1,000 kVA demand-length trigger
+  const r1000 = price('RT6', '2026-08-15', '2026-08-15', rowsFor('2026-08-15', '2026-08-15', (d, i) => (i === 20 ? 375 : 1)), { site: { assumedPf: 0.75 } });
+  assert.equal(r1000.demand.mdEnd, 1000);
+  assert.ok(!codesOf(r1000).includes('DEMAND_LENGTH_NOT_CALCULATED'), 'MD of exactly 1,000 kVA is not above the threshold');
+});
+
+test('RT6: days whose MD differs by a fraction of a kVA are not merged into one run at the first day\'s MD', () => {
+  const a = rt6Day('2026-08-10', 500.0001), b = rt6Day('2026-08-11', 500.0004);
+  const res = price('RT6', '2026-08-10', '2026-08-11', [...a.e, ...b.e], { reactive: [...a.q, ...b.q] });
+  assert.equal(line(res, 'NET.DEMAND').length, 2, 'two different MDs => two lines');
+  const share = res.demand.offPeakShare;
+  const net = md => (34468.2 + 88.518 * (md - 300)) * (1 - share * 0.3);
+  approx(res.totals.networkCents, net(500.0001) + net(500.0004), 1e-6);
+});
