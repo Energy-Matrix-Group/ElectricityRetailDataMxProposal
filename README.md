@@ -1,8 +1,16 @@
 # Electricity retail prototype
 
-`electricity-retail-prototype.html` is a **single, self-contained file** (HTML + CSS + JS, no build step, no backend) that proves the design for selling electricity to contestable business customers on Western Power's SWIS network. Open it in a browser (double-click is fine). Data is kept in `localStorage`; use **Export all data (JSON)** / **Import data (JSON)** (left navigation) to back it up.
+`electricity-retail-prototype.html` is a **single, self-contained file** (HTML + CSS + JS, no build step, no backend) that shows how selling electricity to contestable business customers on Western Power's SWIS network would work. It is a **mock-up and communication tool, not production software**, styled to match Energy Matrix Group's *How we build software* page. Open it in a browser (double-click is fine). Data is kept in `localStorage`; use **Export all data (JSON)** / **Import data (JSON)** (left navigation) to back it up.
 
 External libraries come only from `cdnjs.cloudflare.com`, pinned with SRI hashes: **JSZip 3.10.1** (`.zip` uploads) and **SheetJS 0.18.5** (Excel export). If the CDN is unreachable the app still works; `.zip` upload and Excel export degrade with a clear message.
+
+## Look and feel
+
+The styling follows the Energy Matrix Group *How we build software* page so the mock-up reads as part of the same family: Montserrat (embedded as base64 so the file stays self-contained; SIL Open Font License 1.1), the navy / coral palette, square corners, tracked-caps labels, diamond motifs, the group logo in the sidebar, and light and dark themes. The half-circle button in the sidebar cycles *auto → light → dark*; the choice is stored with the other settings.
+
+* **Quotes and invoices are the retailer's documents.** They carry the company name from *Data & settings* (placeholder "Your Company Pty Ltd") with the navy / coral accents, not the Energy Matrix Group logo.
+* **Chart colours were checked** with the dataviz palette validator (colour-blind separation, contrast, ordinal ramp). The series blue is the brand navy lifted slightly in chroma (`#3B66A3` light, `#5C8DD6` dark) so it separates from coral; time bands use a fixed light-blue ramp from cheap to dear, with coral kept for on-peak.
+* Unit symbols (kW, kVA, kWh, MWh) are never upper-cased by the styling.
 
 ## Try it in two minutes
 
