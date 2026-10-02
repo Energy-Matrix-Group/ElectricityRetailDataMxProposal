@@ -277,7 +277,7 @@ dialog.modal .err { color: var(--bad); margin-right: auto; font-size: 13px; font
 /* ===== print: quotes and invoices -> "Print / Save as PDF" =============================================== */
 @media print {
   @page { size: A4; margin: 13mm 12mm; }
-  :root { color-scheme: light; --bg: #fff; --ink: #000; }
+  :root, :root:not([data-theme="light"]), :root[data-theme="dark"] { color-scheme: light !important; }   /* a dark theme must never colour the page margins or the paper */
   html, body, #app { height: auto !important; background: #fff !important; color: #000 !important; display: block !important; }
   #nav, #banners, .no-print, #toasts, dialog, .page-head, .crumbs, .tabs, .chart-tip, .deco, .mobilebar { display: none !important; }
   #main { overflow: visible !important; } #view { padding: 0 !important; max-width: none !important; }
